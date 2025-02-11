@@ -1,0 +1,20 @@
+---
+title: "Email Randomization"
+output: html_document
+date: "2024-12-17"
+---
+
+```{r}
+library(tidyverse)
+```
+```{r}
+emails <- read_csv("data/emails.csv") %>%
+  mutate(email_address = Q1) %>% 
+  select(email_address) %>%
+  slice(-(1:2)) %>%
+  drop_na() %>%
+  slice_sample(n = 10)
+
+View(emails)
+```
+

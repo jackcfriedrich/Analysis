@@ -1,0 +1,559 @@
+---
+title: "Descriptives"
+output: html_document
+date: "2024-10-14"
+---
+
+```{r}
+# Packages
+library(tidyverse)
+library(readxl)
+library(psych)
+library(confintr)
+library(ggridges)
+```
+
+# Read in data
+```{r}
+dat <- read_rds("data/cleaned_data.RDS")
+```
+
+```{r}
+# Get write ins for academic appointment
+dat %>% 
+  select(academic_appointment_OTHER, response_id) %>%
+  drop_na(academic_appointment_OTHER) %>%
+  write_excel_csv("academic_appointment_write_ins.csv")
+
+# Read in write-ins 
+
+coded_appointments <- read_xlsx("coded_appointment.xlsx")
+
+# Replace Other (please describe) with manually coded values
+dat <- dat %>% 
+  mutate(academic_appointment = na_if(academic_appointment, "Other (please describe)")) %>%
+  left_join(., coded_appointments, 
+            by = c("response_id", "academic_appointment_OTHER")) %>%
+  mutate(academic_appointment = coalesce(academic_appointment.x, academic_appointment.y)) %>%
+  select(-c("academic_appointment.x", "academic_appointment.y"))
+
+```
+
+# Demographics
+
+```{r}
+# Academic Appointment
+dat %>% 
+  drop_na(academic_appointment) %>% 
+  count(academic_appointment) %>% 
+  drop_na(academic_appointment) %>% 
+  arrange(desc(n)) %>%
+  mutate(percent = round((n / sum(n)) * 100, 1))
+
+# Career Position
+dat %>% 
+  drop_na(career_position) %>% 
+  count(career_position) %>% 
+  arrange(desc(n)) %>% 
+  mutate(percent = round((n / sum(n)) * 100, 1))
+
+# Gender
+dat %>% 
+  drop_na(gender) %>% 
+  count(gender) %>% 
+  arrange(desc(n)) %>%
+  mutate(percent = round((n / sum(n)) * 100, 1))
+
+# Ethnic minority status
+dat %>% 
+  drop_na(minority_status) %>% 
+  count(minority_status) %>% 
+  arrange(desc(n)) %>%
+  mutate(percent = round((n / sum(n)) * 100, 1))
+
+# Country 
+dat %>% 
+  drop_na(country) %>% 
+  count(country) %>% 
+  arrange(desc(n)) %>%
+  mutate(percent = round((n / sum(n)) * 100, 1))
+```
+```{r}
+# Descriptive for exploratory measure
+dat %>% 
+  mutate(across(ends_with("_engaged"), ~ recode(.,
+                                                "Yes" = 1,
+                                                "No" = 0)))
+
+dat %>%
+  # Drop NAs and group by career position and response
+  drop_na(taught_practice_gradschool, career_position) %>%
+  group_by(career_position, taught_practice_gradschool) %>%
+  count() %>%
+  # Calculate total responses for each career_position
+  group_by(career_position) %>%
+  mutate(
+    total = sum(n), # Total count for the career_position
+    percentage = round((n / total) * 100, 1) # Percentage calculation
+  ) %>%
+  ungroup() %>%
+  arrange(desc(career_position))
+
+dat %>%
+  drop_na(taught_practice_gradschool) %>%
+  group_by(taught_practice_gradschool) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(
+    total = sum(n), 
+    percentage = round((n / total) * 100, 1) # Percentage calculation
+  )
+```
+# Descriptives for vignette responses
+```{r}
+dat %>% 
+  dplyr::select(matches("_vignette_modified|Vignette_mean")) %>% 
+  describe() %>% 
+  arrange(mean)
+```
+
+# Descriptives for QRP statements
+```{r}
+# QRP engaged
+dat %>% 
+  dplyr::select(matches("_engaged")) %>% 
+  describe() %>% 
+  arrange(desc(mean))
+
+# QRP use
+dat %>% 
+  dplyr::select(matches("_use")) %>% 
+  describe() %>% 
+  arrange(desc(mean))
+
+
+# QRP support
+dat %>% 
+  dplyr::select(matches("_support")) %>% 
+  describe() %>% 
+  arrange(desc(mean))
+
+dat %>%
+  select(matches("_descriptive|_injunctive")) %>% 
+  drop_na()
+
+# QRP descriptive 
+dat %>% 
+  dplyr::select(matches("_descriptive")) %>% 
+  describe() %>%
+  arrange(desc(mean))
+
+# QRP injunctive
+dat %>% 
+  dplyr::select(matches("_injunctive")) %>% 
+  describe() %>% 
+  arrange(desc(mean))
+```
+
+```{r}
+# Calculate CIs for descriptive norms
+descriptive <- dat %>% 
+  dplyr::select(matches("_descriptive")) %>% 
+  describe() 
+
+descriptive <- as.data.frame(descriptive)
+
+descriptive <- descriptive %>%
+  mutate(lower_ci = round(mean - 1.96 * (sd / sqrt(n)), 2),
+         upper_ci = round(mean + 1.96 * (sd / sqrt(n)), 2)) %>%
+  dplyr::select(sd, n, mean, lower_ci, upper_ci) 
+
+descriptive
+```
+
+```{r}
+# Calculate CI for injunctive norms
+injunctive <- dat %>% 
+  dplyr::select(matches("_injunctive")) %>% 
+  describe() 
+
+injunctive <- as.data.frame(injunctive)
+
+injunctive <- injunctive %>%
+  mutate(lower_ci = round(mean - 1.96 * (sd / sqrt(n)), 2),
+         upper_ci = round(mean + 1.96 * (sd / sqrt(n)), 2)) %>%
+  dplyr::select(sd, n, mean, lower_ci, upper_ci)
+
+injunctive
+```
+
+```{r}
+# Function to calculate engagement (yes/no) in QRPs and associated CIs
+used_QRP <- function(QRP_column) {
+  QRP_column <- na.omit(QRP_column) 
+  
+  n <- length(QRP_column)
+  mean_prop <- mean(QRP_column == 1) # Proportion of 1s
+  
+  # Calculate standard error and confidence interval
+  se <- sqrt((mean_prop * (1 - mean_prop)) / n) # Standard error
+  z <- 1.96 # Z-score for 95% CI
+  
+  lower_ci <- max(0, mean_prop - z * se) # Lower bound of CI (bounded at 0)
+  upper_ci <- min(1, mean_prop + z * se) # Upper bound of CI (bounded at 1)
+  
+  tibble(
+    n = n,
+    mean = round(mean_prop * 100, 2), # Mean in percentage
+    lower_ci = round(lower_ci * 100, 2), # Lower CI in percentage
+    upper_ci = round(upper_ci * 100, 2)  # Upper CI in percentage
+  )
+}
+
+# Apply the function
+engaged <- dat %>%
+  dplyr::select(matches("_engaged")) %>%
+  map_df(~ used_QRP(.), .id = "variable")
+
+engaged
+
+# Calculate the number of organizational scienits who have used any QRP
+dat %>%
+  dplyr::select(matches("_engaged")) %>%
+  drop_na() %>%
+  rowwise() %>%
+  mutate(at_least_one_engaged = ifelse(any(c_across(everything()) == 1), 1, 0)) %>%
+  ungroup() %>%
+  summarise(percentage = mean(at_least_one_engaged) * 100)
+
+# Mean number of QRPs used 
+dat %>%
+  dplyr::select(matches("_engaged")) %>%
+  rowwise() %>%
+  filter(all(c_across(everything()) %in% c(0, 1))) %>%  # Keep only rows where all values are either 1 or 0
+  mutate(count_ones = sum(c_across(everything()) == 1)) %>%
+  ungroup() %>%
+  summarise(mean_count = mean(count_ones))
+```
+```{r}
+# Get CI and mean estimates for use of QRPs in studies
+use <- dat %>% 
+  dplyr::select(ends_with("_use")) %>% 
+  describe() 
+
+use <- as.data.frame(use)
+
+use <- use %>%
+  mutate(lower_ci = round(mean - 1.96 * (sd / sqrt(n)), 2),
+         upper_ci = round(mean + 1.96 * (sd / sqrt(n)), 2)) %>%
+  dplyr::select(mean, lower_ci, upper_ci)
+
+use
+```
+
+```{r}
+# Reliability estimates for scales 
+# PPQr
+dat %>% 
+  select(matches("PPQr")) %>%
+  select(!c("PPQr_mean", "PPQr_attitude_mean", "PPQr_stress_mean", "PPQr_resources_mean")) %>%
+  alpha()
+
+# PPQr attitude
+dat %>% 
+  select(matches("PPQr_attitude|PPQr_R_attitude")) %>%
+  select(-"PPQr_attitude_mean") %>%
+  alpha()
+
+# PPQr stress
+dat %>% 
+  select(matches("PPQr_stress|PPQr_R_stress")) %>%
+  select(-"PPQr_stress_mean") %>%
+  alpha()
+
+# PPQr resources
+dat %>% 
+  select(matches("PPQr_resources|PPQr_R_resources")) %>%
+  select(-"PPQr_resources_mean") %>%
+  alpha()
+
+# For QRP descriptive norms
+dat %>% 
+  dplyr::select(matches("_descriptive")) %>% 
+  dplyr::select(!QRP_descriptive_mean) %>%
+  alpha()
+
+# For QRP injunctive norms
+dat %>% 
+  dplyr::select(matches("_injunctive")) %>% 
+  dplyr::select(!QRP_injunctive_mean) %>%
+  alpha()
+
+# Social desirability scale
+dat %>% 
+  select(matches("social_desirability")) %>%
+  select(-"social_desirability_mean") %>%
+  select(-"sum_social_desirability") %>% 
+  alpha()
+```
+
+```{r}
+# Examine relationships between predictors and QRP use
+dat %>% 
+  dplyr::select(QRP_injunctive_mean, QRP_use_mean, PPQr_mean, QRP_descriptive_mean) %>% 
+  pairs()
+```
+
+```{r}
+# Confidence intervals for skewness
+# PPQr
+ci_skewness(dat$PPQr_mean, R = 10000)
+
+# QRP variables
+ci_skewness(dat$QRP_use_mean, R = 10000)
+ci_skewness(dat$QRP_injunctive_mean, R = 10000)
+ci_skewness(dat$QRP_descriptive_mean, R = 10000)
+```
+
+```{r}
+# Confidence intervals for kurtosis 
+
+# PPQr
+ci_kurtosis(dat$PPQr_mean, R = 10000)
+
+# QRP variables
+ci_kurtosis(dat$QRP_use_mean, R = 10000)
+ci_kurtosis(dat$QRP_injunctive_mean, R = 10000)
+ci_kurtosis(dat$QRP_descriptive_mean, R = 10000)
+```
+
+```{r}
+# Normality 
+QuantPsyc::eda.uni(dat$PPQr_mean)
+QuantPsyc::eda.uni(dat$QRP_use_mean)
+QuantPsyc::eda.uni(dat$QRP_injunctive_mean)
+QuantPsyc::eda.uni(dat$QRP_descriptive_mean)
+```
+# Correlation tables 
+
+```{r}
+# Correlation table including # PPQr, PPQr subscales, social desirability scales, mean injunctive, mean descriptive, mean use
+dat_cor_table <- dat %>% 
+  dplyr::select(PPQr_mean, PPQr_stress_mean, PPQr_attitude_mean, PPQr_resources_mean, social_desirability_mean, QRP_descriptive_mean, QRP_injunctive_mean, QRP_support_mean, QRP_use_mean, Vignette_mean)
+
+# Pearson correlations with bonferroni adjustment for multiple comparisons. 
+correlations <- corr.test(dat_cor_table, adjust = "bonferroni", alpha = .05)
+print(correlations, short = FALSE)
+
+# Bootstrapped confidence intervals around correlations
+correlations_bootstrapped <- cor.ci(dat_cor_table, method = "pearson", p = .05, n.iter = 10000)
+print(correlations_bootstrapped)
+
+# get adjusted p values
+round(correlations$p.adj, 4)
+
+# Get means and sds
+psych::describe(dat_cor_table)
+```
+# Visualization
+```{r}
+# Visualization for responses to "How frequently SHOULD other org scientists engage in x practice?"
+
+# Reverse factor levels
+dat_should <- dat %>%
+  mutate(across(
+    contains("_support"),
+    ~ recode(
+      .,
+      `1` = "Never",
+      `2` = "Rarely",
+      `3` = "Often",
+      `4` = "Almost always"
+    ) %>% factor(levels = c("Almost always", "Often", "Rarely", "Never")) # Reverse levels
+  ))
+
+# Prepare the data
+dat_stacked <- dat_should %>%
+  dplyr::select(matches("_support")) %>%
+  dplyr::select(!QRP_support_mean) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "practice",
+    values_to = "response"
+  ) %>%
+  drop_na() %>% # Remove rows with missing responses
+  group_by(practice, response) %>%
+  summarize(count = n(), .groups = "drop") %>% # Count responses by practice and response
+  group_by(practice) %>%
+  mutate(proportion = count / sum(count)) %>% # Calculate proportions for each practice
+  ungroup() %>%
+  mutate(practice = str_replace_all(practice, "_support", "") %>% # Remove "_support"
+           str_replace_all("_", " ") %>% 
+           str_to_title()) 
+
+# Reorder practices by "Never" proportion
+dat_stacked <- dat_stacked %>%
+  group_by(practice) %>%
+  mutate(never_prop = proportion[response == "Never"]) %>% 
+  ungroup() %>%
+  mutate(practice = reorder(practice, never_prop)) 
+
+dat_stacked_interpretation <- dat_stacked %>% 
+  mutate(percent = proportion * 100)
+
+# Create the stacked bar chart
+support_plot <- ggplot(dat_stacked, aes(x = practice, y = proportion, fill = as.factor(response))) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_brewer(palette = "Blues", name = "Response") +
+  labs(
+    title = "How frequently SHOULD organizational scientists use this practice?",
+    x = "Questionable Research Practice",
+    y = "Proportion"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 6)) + 
+  theme(
+    panel.background = element_rect(fill = "white", color = NA), 
+    plot.background = element_rect(fill = "white", color = NA)  
+  )
+
+support_plot
+
+# Save the plot
+ggsave(
+  filename = "support_plot.png",  
+  plot = support_plot,            
+  width = 6.5,                    
+  height = 4,                
+  dpi = 300                 
+)
+```
+
+```{r}
+# Create figure contrasting estimates of how often other researchers have engaged in practices with reports of own use
+
+# Set order for displaying practices (same as my tables)
+variable_order <- c(
+  "Harking",
+  "Optional Stopping",
+  "Hide Imputation",
+  "Switch Analysis Selectively",
+  "Selectively Include Covariates",
+  "Exclude Data Selectively",
+  "Underreport Results",
+  "Omit Studies Or Variables",
+  "Selectively Report Outcomes",
+  "Round P Values",
+  "Hide Problems"
+)
+
+# Reverse the order
+variable_order <- rev(variable_order)
+
+# Combine datasets and add a source column
+engaged <- engaged %>%
+  mutate(source = "Self-reported use")
+
+descriptive <- descriptive %>%
+  rownames_to_column("variable") %>%
+  mutate(source = "Descriptive norm")
+
+# Combine datasets
+combined_data <- bind_rows(engaged, descriptive)
+
+# Remove suffixes from variable names
+combined_data <- combined_data %>%
+  mutate(
+    variable = str_remove(variable, "_engaged|_descriptive"), 
+    variable = str_replace_all(variable, "_", " "),    
+    variable = str_to_title(variable)               
+  ) %>%  
+  filter(variable != "Qrp Mean") %>% 
+  mutate(variable = factor(variable, levels = variable_order))
+
+# Create the plot
+engaged_vs_descriptive <- ggplot(combined_data, aes(x = variable, y = mean, color = source)) +
+  geom_point(size = 1.0) + # Point for the mean
+  geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = 0.3) + 
+  coord_flip() + 
+  labs(
+    title = "Self-Reported QRP Use vs. Descriptive Norm",
+    x = "Practice",
+    y = "Mean (%)",
+    color = "Category"
+  ) +
+  scale_color_manual(values = c("#D55E00", "#0072B2")) + 
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 8),
+    axis.text.x = element_text(size = 8),
+    legend.text = element_text(size = 7), 
+    legend.position = "right", 
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background = element_rect(fill = "white", color = NA)   
+  )
+
+# Save the plot
+ggsave(
+  filename = "engaged_vs_descriptive_plot.png", 
+  plot = engaged_vs_descriptive, 
+  width = 6.5,                
+  height = 4,  
+  dpi = 300   
+)
+```
+
+
+```{r}
+# Create plot to show distributions of vignette responses
+
+dat_long <- dat %>%
+  select(matches("vignette_modified")) %>%
+  pivot_longer(cols = everything(), 
+               names_to = "vignette", 
+               values_to = "response") %>%
+  # Format vignette names: remove underscores, drop "vignette_modified", and convert to title case
+  mutate(vignette = str_replace_all(vignette, "_", " ") %>% 
+           str_remove("vignette modified") %>%
+           str_to_title() %>%
+           str_trim()) %>%
+  mutate(vignette = factor(vignette, levels = variable_order))
+
+vignette_responses <- ggplot(dat_long, aes(x = response, y = vignette)) +
+  # Add density ridges in the background
+  geom_density_ridges(aes(fill = vignette), alpha = 0.4, color = "grey") +
+  # Add box plots
+  geom_boxplot(aes(x = response), width = 0.2, outlier.shape = NA, color = "black", alpha = 0.3) +
+  
+  # Adjust plot appearance
+  theme_minimal() +
+  labs(
+    title = "Responses to Case Study Vignettes",
+    x = "Response",
+    y = "Vignette"
+  ) +
+  theme(
+    axis.text.y = element_text(size = 12),
+    axis.text.x = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    plot.title = element_text(size = 12), 
+    panel.background = element_rect(fill = "white", color = NA), 
+    plot.background = element_rect(fill = "white", color = NA), 
+    legend.position = ("none")
+  )
+
+print(vignette_responses)
+
+# Save the plot 
+ggsave(
+  filename = "vignette_responses.png",
+  plot = vignette_responses, 
+  width = 6.5,   
+  height = 7,   
+  dpi = 300  
+)
+```
+
+
+

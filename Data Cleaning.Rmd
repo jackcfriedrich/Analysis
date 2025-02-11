@@ -1,0 +1,475 @@
+---
+title: "Descriptives"
+output: html_document
+date: "2024-10-14"
+---
+
+```{r}
+# Packages
+library(tidyverse)
+library(labelled)
+library(readxl)
+library(psych)
+```
+
+# Read in data
+```{r}
+# Get vector of column names from Excel sheet
+R_Readable <- read_xlsx("Names.xlsx") %>% 
+  pull(R_Readable)
+
+# Read in CSV
+dat <- read_csv("data/data.csv", col_names = R_Readable, skip = 1)
+
+# Inspect
+glimpse(dat)
+```
+
+# Assign label attributes
+```{r}
+# Extract label attributes and attach them to the column names
+dat_labels <- as.character(dat[1,])
+var_label(dat) <- dat_labels
+
+# Drop first two rows 
+dat <- dat %>% 
+  slice(-(1:2))
+```
+
+# Data filtering
+```{r}
+# Filtering for usable participant data
+# Filter for participants who gave informed consent and get sample size
+dat_consented <- dat %>% 
+  filter(informed_consent == "I agree")
+nrow(dat_consented)
+
+# Filter for participants who do NHST and are old enough and get sample size
+dat_nhst <- dat_consented %>% 
+  filter(nhst_screener == "Yes") %>% 
+  filter(age_screener == "Yes")
+nrow(dat_nhst)
+
+# Filter for participants who passed attention check and get sample size
+dat_attention <- dat_nhst %>% 
+  filter(attention_check_1 == "Agree") %>% 
+  filter(attention_check_2 == "Totally disagree")
+nrow(dat_attention)
+
+# Filter out participants who wanted data excluded and get sample size
+dat_keeping <- dat_attention %>% 
+  filter(data_keeping %in% c(NA, "End survey"))
+nrow(dat_keeping)
+```
+```{r}
+# Equivalence test
+dat_completers <- dat %>% filter(response_id %in% dat_keeping$response_id)
+nrow(dat_completers)
+dat_non_completers <- dat %>% filter(!response_id %in% dat_keeping$response_id) %>%
+  filter(nhst_screener == "Yes") %>% 
+  filter(age_screener == "Yes") %>%
+  filter(informed_consent == "I agree")
+  
+nrow(dat_non_completers)
+
+run_chi_square_test <- function(dat_completers, dat_non_completers, demographic, filter_values = NULL) {
+  if (!is.null(filter_values)) {
+    dat_completers <- dat_completers %>% filter(!!sym(demographic) %in% filter_values)
+    dat_non_completers <- dat_non_completers %>% filter(!!sym(demographic) %in% filter_values)
+  }
+  
+  # Create observed counts for chi-square test
+  observed <- full_join(
+    dat_completers %>%
+      drop_na(!!sym(demographic)) %>%
+      count(!!sym(demographic), name = "completers_n"),
+    dat_non_completers %>%
+      drop_na(!!sym(demographic)) %>%
+      count(!!sym(demographic), name = "non_completers_n"),
+    by = demographic
+  ) %>%
+    replace_na(list(completers_n = 0, non_completers_n = 0))  # Replace NA with 0
+  
+  # Create contingency table
+  chi_table <- observed %>%
+    select(completers_n, non_completers_n) %>%
+    as.matrix()
+  
+  # Run chi-square test
+  chi_result <- chisq.test(chi_table)
+  
+  # Return results
+  list(
+    observed = observed,
+    chi_square_result = chi_result
+  )
+}
+
+
+result<- run_chi_square_test(
+  dat_completers = dat_completers,
+  dat_non_completers = dat_non_completers,
+  demographic = "gender",
+  filter_values = c("Male", "Female") 
+)
+
+result <- run_chi_square_test(dat_completers, dat_non_completers, "academic_appointment")
+result <- run_chi_square_test(dat_completers, dat_non_completers, "career_position")
+result <- run_chi_square_test(dat_completers, dat_non_completers, "minority_status")
+
+# Display observed counts
+print(result$observed)
+
+# Display chi-square test results
+print(result$chi_square_result)
+
+# Combine the completers and non-completers data for gender
+observed_gender <- full_join(
+  dat_completers %>%
+    filter(gender %in% c("Male", "Female")) %>%
+    drop_na(gender) %>%
+    count(gender, name = "completers_n"),
+  dat_non_completers %>%
+    filter(gender %in% c("Male", "Female")) %>%
+    drop_na(gender) %>%
+    count(gender, name = "non_completers_n"),
+  by = "gender"
+) %>%
+  replace_na(list(completers_n = 0, non_completers_n = 0))
+
+# Calculate total sample size
+total_sample_size <- sum(observed_gender$completers_n) + sum(observed_gender$non_completers_n)
+
+# Display total sample size
+total_sample_size
+
+# For ethnic minority status
+ethnic_minority_status <- full_join(
+  dat_completers %>%
+    filter(minority_status %in% c("Yes", "No")) %>%
+    drop_na(minority_status) %>%
+    count(minority_status, name = "completers_n"),
+  dat_non_completers %>%
+    filter(minority_status %in% c("Yes", "No")) %>%
+    drop_na(minority_status) %>%
+    count(minority_status, name = "non_completers_n"),
+  by = "minority_status"
+) %>%
+  replace_na(list(completers_n = 0, non_completers_n = 0))
+
+# Calculate total sample size
+total_sample_size <- sum(ethnic_minority_status$completers_n) + sum(ethnic_minority_status$non_completers_n)
+
+# Display total sample size
+total_sample_size
+
+# For career position
+career_position <- full_join(
+  dat_completers %>%
+    drop_na(career_position) %>%
+    count(career_position, name = "completers_n"),
+  dat_non_completers %>%
+    drop_na(career_position) %>%
+    count(career_position, name = "non_completers_n"),
+  by = "career_position"
+) %>%
+  replace_na(list(completers_n = 0, non_completers_n = 0))
+
+# Calculate total sample size
+total_sample_size <- sum(career_position$completers_n) + sum(career_position$non_completers_n)
+
+# Display total sample size
+total_sample_size
+
+academic_appointment <- full_join(
+  dat_completers %>%
+    drop_na(academic_appointment) %>%
+    count(academic_appointment, name = "completers_n"),
+  dat_non_completers %>%
+    drop_na(academic_appointment) %>%
+    count(academic_appointment, name = "non_completers_n"),
+  by = "academic_appointment"
+) %>%
+  replace_na(list(completers_n = 0, non_completers_n = 0))
+
+# Calculate total sample size
+total_sample_size <- sum(academic_appointment$completers_n) + sum(academic_appointment$non_completers_n)
+
+# Display total sample size
+total_sample_size
+```
+
+
+# Vignettes data cleaning
+```{r}
+# Change to numeric
+dat_keeping <- dat_keeping %>% 
+  mutate(across(contains("vignette"), as.numeric))
+
+# Standardize vignettes function 
+standardize_function <- function(dat, column_statement_a, content_column_statement_a, vignette, new_column_name) {
+  dat %>%
+    mutate(
+      !!sym(new_column_name) := if_else(
+        str_detect(!!sym(column_statement_a), fixed(content_column_statement_a)),
+        !!sym(vignette) * -1, 
+        !!sym(vignette)
+      )
+    )
+}
+
+# HARKing 
+dat_keeping <- standardize_function(
+  dat = dat_keeping, 
+  column_statement_a = "statement_a_HARKing", 
+  content_column_statement_a = "Rewrite your introduction to suggest that this effect was hypothesized originally to improve the paper’s publishability", 
+  vignette = "HARKing_vignette",
+  new_column_name = "HARKing_vignette_modified"  # New column name
+)
+
+# Optional stopping 
+dat_keeping <- standardize_function(
+  dat = dat_keeping, 
+  column_statement_a = "statement_a_optional_stopping", 
+  content_column_statement_a = "Close data collection after obtaining the significant result", 
+  vignette = "optional_stopping_vignette",
+  new_column_name = "optional_stopping_vignette_modified"  # New column name
+)
+
+# Hide imputation
+dat_keeping <- standardize_function(
+  dat = dat_keeping, 
+  column_statement_a = "statement_a_hide_imputation", 
+  content_column_statement_a = "Report your findings without noting the imputation", 
+  vignette = "hide_imputation_vignette",
+  new_column_name = "hide_imputation_vignette_modified"  # New column name
+)
+
+# Switch analysis selectively
+dat_keeping <- standardize_function(
+  dat = dat_keeping, 
+  column_statement_a = "statement_a_switch_analysis_selectively", 
+  content_column_statement_a = "Switch to a different analysis method until you find a significant result", 
+  vignette = "switch_analysis_selectively_vignette",
+  new_column_name = "switch_analysis_selectively_vignette_modified"  # New column name
+)
+
+# Selectively include covariates
+dat_keeping <- standardize_function(
+  dat = dat_keeping, 
+  column_statement_a = "statement_a_selectively_include_covariates", 
+  content_column_statement_a = "Exclude non-significant covariates from your final paper submission",
+  vignette = "selectively_include_covariates_vignette",
+  new_column_name = "selectively_include_covariates_vignette_modified"  # New column name
+)
+
+# Exclude data selectively
+dat_keeping <- standardize_function(
+  dat = dat_keeping, 
+  column_statement_a = "statement_a_exclude_data_selectively", 
+  content_column_statement_a = "Rerun the analyses and report those results if they are significant", 
+  vignette = "exclude_data_selectively_vignette",
+  new_column_name = "exclude_data_selectively_vignette_modified"  # New column name
+)
+
+# Underreport results
+dat_keeping <- standardize_function(
+  dat = dat_keeping, 
+  column_statement_a = "statement_a_underreport_results", 
+  content_column_statement_a = "Report only those results that are relevant to the story you want to tell in the publication", 
+  vignette = "underreport_results_vignette",
+  new_column_name = "underreport_results_vignette_modified"  # New column name
+)
+
+# Omit non-significant studies or variables
+dat_keeping <- standardize_function(
+  dat = dat_keeping, 
+  column_statement_a = "statement_a_omit_studies_or_variables", 
+  content_column_statement_a = "Report only those studies that 'worked' (i.e., consistent with the motivation theory)", 
+  vignette = "omit_studies_or_variables_vignette",
+  new_column_name = "omit_studies_or_variables_vignette_modified"  # New column name
+)
+
+# Selectively report outcomes
+dat_keeping <- standardize_function(
+  dat = dat_keeping, 
+  column_statement_a = "statement_a_selectively_report_outcomes", 
+  content_column_statement_a = "Highlight only the relevant, significant outcomes", 
+  vignette = "selectively_report_outcomes_vignette",
+  new_column_name = "selectively_report_outcomes_vignette_modified"  # New column name
+)
+
+# Round p-values
+dat_keeping <- standardize_function(
+  dat = dat_keeping, 
+  column_statement_a = "statement_a_round_p_values", 
+  content_column_statement_a = "Round down the p-value to meet the significance threshold when submitting for publication", 
+  vignette = "round_p_values_vignette",
+  new_column_name = "round_p_values_vignette_modified"  # New column name
+)
+
+# Hide problems
+dat_keeping <- standardize_function(
+  dat = dat_keeping, 
+  column_statement_a = "statement_a_hide_problems", 
+  content_column_statement_a = "Omit mentioning this data quality issue", 
+  vignette = "hide_problems_vignette",
+  new_column_name = "hide_problems_vignette_modified"  # New column name
+)
+```
+
+```{r}
+# Compute mean indices for vignettes
+dat_keeping <- dat_keeping %>%
+  rowwise() %>%
+  mutate(Vignette_mean = if_else(
+    sum(!is.na(c_across(contains("vignette_modified")))) >= 3,  # Count non-NA values
+    mean(c_across(contains("vignette_modified")), na.rm = TRUE),  # Calculate mean if > 3 responses
+    NA_real_  # Assign NA if less than 3 responses
+  ))
+```
+
+# QRP statements data cleaning 
+```{r}
+# Change descriptive QRP variables from character to numeric
+dat_keeping <- dat_keeping %>%
+  mutate(across(contains("_descriptive"), as.numeric))
+
+# Change scale to numeric value for QRP injunctive variables
+dat_keeping <- dat_keeping %>%
+  mutate(across(contains("_injunctive"), ~ recode(.,
+                "Strongly disapprove" = 1,
+                "Somewhat disapprove" = 2,
+                "Somewhat approve" = 3,
+                "Strongly approve" = 4)))
+
+
+# Change use QRP variables from character to numeric
+dat_keeping <- dat_keeping %>%
+  mutate(across(contains("_use"), as.numeric))
+
+
+# Change scale to numeric value for QRP support variables
+dat_keeping <- dat_keeping %>%
+  mutate(across(contains("_support"), ~ recode(.,
+                "Never" = 1,
+                "Rarely" = 2,
+                "Often" = 3,
+                "Almost always" = 4)))
+```
+
+```{r}
+# Compute mean indices for QRP statements
+# For descriptive norms around QRP
+dat_keeping <- dat_keeping %>%
+  rowwise() %>%
+  mutate(QRP_descriptive_mean = if_else(
+    sum(!is.na(c_across(contains("_descriptive")))) >= 3,  # Count non-NA values
+    mean(c_across(contains("_descriptive")), na.rm = TRUE),  # Calculate mean if > 3 responses
+    NA_real_  # Assign NA if less than 3 responses
+  ))
+
+# For injunctive norms around QRP
+dat_keeping <- dat_keeping %>%
+  rowwise() %>%
+  mutate(QRP_injunctive_mean = if_else(
+    sum(!is.na(c_across(contains("_injunctive")))) >= 3,  # Count non-NA values
+    mean(c_across(contains("_injunctive")), na.rm = TRUE),  # Calculate mean if > 3 responses
+    NA_real_  # Assign NA if less than 3 responses
+  ))
+
+# For use of QRP
+dat_keeping <- dat_keeping %>%
+  rowwise() %>%
+  mutate(QRP_use_mean = if_else(
+    sum(!is.na(c_across(contains("_use")))) >= 3,  # Count non-NA values
+    mean(c_across(contains("_use")), na.rm = TRUE),  # Calculate mean if > 3 responses
+    NA_real_  # Assign NA if less than 3 responses
+  ))
+
+# For support of QRP
+dat_keeping <- dat_keeping %>%
+  rowwise() %>%
+  mutate(QRP_support_mean = if_else(
+    sum(!is.na(c_across(contains("_support")))) >= 3,  # Count non-NA values
+    mean(c_across(contains("_support")), na.rm = TRUE),  # Calculate mean if > 3 responses
+    NA_real_  # Assign NA if less than 3 responses
+  ))
+```
+
+```{r}
+# Change QRP engagement variable from yes/no format to 1/0
+
+dat_keeping <- dat_keeping %>% 
+  mutate(across(ends_with("_engaged"), ~ recode(.,
+                                                "Yes" = 1,
+                                                "No" = 0)))
+
+# Change to factor
+dat_keeping <- dat_keeping %>% 
+  mutate(across(ends_with("_engaged"), as.factor))
+```
+
+# Publication Pressure questionnaire data cleaning
+```{r}
+# Change scale to numeric value for PPQr scale
+dat_keeping <- dat_keeping %>%
+  mutate(across(contains("PPQr_"), ~ recode(.,
+                "Totally disagree" = 1,
+                "Disagree" = 2,
+                "Neither agree nor disagree" = 3,
+                "Agree" = 4,
+                "Totally agree" = 5)))
+
+# Reverse code items
+dat_keeping <- dat_keeping %>%
+  mutate(across(contains("PPQr_R_"), ~ 6 - .))
+
+# Compute mean scores
+dat_keeping <- dat_keeping %>%
+  rowwise() %>%
+  mutate(PPQr_mean = mean(c_across(contains("PPQr_")), na.rm = TRUE)) %>%
+  mutate(PPQr_attitude_mean = mean(c_across(contains("_attitude_")), na.rm = TRUE)) %>%
+  mutate(PPQr_stress_mean = mean(c_across(contains("_stress_")), na.rm = TRUE)) %>%
+  mutate(PPQr_resources_mean = mean(c_across(contains("_resources_")), na.rm = TRUE))
+```
+
+# Social desirability questionnaire data cleaning
+```{r}
+# Change to numeric
+dat_keeping <- dat_keeping %>% 
+  mutate(across(contains("social_desirability"), ~ recode(.,
+         "True" = 1,
+         "False" = 0)))
+
+# Reverse code items
+dat_keeping <- dat_keeping %>%
+  mutate(across(contains("social_desirability_R"), ~ 1 -.))
+
+# Sum score: total number of socially desirable responses
+dat_keeping <- dat_keeping %>%
+  rowwise() %>%
+  mutate(sum_social_desirability = sum(c_across(contains("social_desirability")), na.rm = TRUE))
+
+# Mean score: average number of socially desirable responses
+dat_keeping <- dat_keeping %>% 
+  rowwise() %>%
+  mutate(social_desirability_mean = mean(c_across(starts_with("social_desirability")), na.rm = TRUE))
+```
+
+```{r}
+# Change career stage to factor
+dat_keeping$career_position <- factor(dat_keeping$career_position, 
+                             levels = c("Graduate student",
+                                        "Early-career academic/researcher",
+                                        "Mid-career academic/researcher", 
+                                        "Senior academic/researcher"))
+
+```
+
+
+```{r}
+# Save data as RDS for other scripts
+saveRDS(dat_keeping, file = "data/cleaned_data.rds")
+```
+

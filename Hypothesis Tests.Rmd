@@ -1,0 +1,1572 @@
+---
+title: "Hypothesis Tests"
+output: html_document
+date: "2024-10-21"
+---
+
+```{r}
+options(scipen = 999)
+set.seed(11)
+```
+
+```{r}
+# Packages
+library(tidyverse)
+library(psych)
+library(relaimpo)
+library(lme4)
+library(broom)
+library(confintr)
+library(olsrr)
+library(boot)
+library(sandwich)
+library(lmerTest)
+library(readxl)
+library(sjPlot)
+```
+
+# Read in data
+
+```{r}
+dat <- read_rds("data/cleaned_data.RDS")
+
+# Mean center variables
+dat <- dat %>% 
+  ungroup() %>% 
+  mutate(
+    PPQr_mean_centered = PPQr_mean - mean(PPQr_mean, na.rm = TRUE),  # Mean center PPQr_mean
+    QRP_descriptive_mean_centered = QRP_descriptive_mean - mean(QRP_descriptive_mean, na.rm = TRUE), # Mean center descriptive norms
+    QRP_injunctive_mean_centered = QRP_injunctive_mean - mean(QRP_injunctive_mean, na.rm = TRUE)  # Mean center injunctive norms
+  ) 
+```
+
+# Hypothesis 1
+
+Organizational scientists’ reports of personally perceived publication pressure is positively related to reporting the use of various QRPs in a percentage of their studies.
+
+```{r}
+# Model 
+model_hypothesis_1 <- lm(QRP_use_mean ~ PPQr_mean_centered, data = dat)
+
+summary(model_hypothesis_1)
+tab_model(model_hypothesis_1, show.se = TRUE, show.ci = FALSE)
+```
+
+```{r}
+# Get bootsrapped confidence intervals
+boot_fn <- function(data, indices) {
+  
+  boot_sample <- data[indices, ]
+  model <- lm(QRP_use_mean ~ PPQr_mean_centered, data = boot_sample)
+  return(coef(model))
+  
+}
+
+set.seed(11)
+bootstrap_results <- boot(data = dat, statistic = boot_fn, R = 10000)
+
+# Confidence intervals for the intercept
+boot.ci(bootstrap_results, type = "perc", index = 1) # 1 for intercept
+
+# Confidence intervals for the first slope
+boot.ci(bootstrap_results, type = "perc", index = 2) # 2 for ppqr
+```
+
+## Assumption Checks Hypothesis 1
+
+```{r}
+# Skewness and Kurtosis
+# QRP Use
+ci_skewness(dat$QRP_use_mean, R = 10000)
+ci_kurtosis(dat$QRP_use_mean, R = 10000)
+
+# PPQr
+ci_skewness(dat$PPQr_mean, R = 10000)
+ci_kurtosis(dat$PPQr_mean, R = 10000)
+
+# Plotting variables
+QuantPsyc::eda.uni(dat$PPQr_mean)
+QuantPsyc::eda.uni(dat$QRP_use_mean)
+```
+
+```{r}
+# Plotted residuals 
+model_hypothesis_1 %>% 
+  residuals() %>% 
+  hist(main = "Histogram of Residuals", breaks = 30)
+
+par(mfrow = c(2, 2))
+plot(model_hypothesis_1)
+
+# Homoskedasticity
+plot(model_hypothesis_1, which = 1)
+
+# Outliers check with Cook's Distance
+plot(model_hypothesis_1, which = 4)
+plot(model_hypothesis_1, which = 5)  # Residuals vs leverage
+
+performance::check_model(model_hypothesis_1)
+```
+
+```{r}
+# Linearity
+dat %>% 
+  ggplot(aes(x = PPQr_mean, y = QRP_use_mean)) +
+  geom_point() +
+  geom_smooth()
+```
+
+# Prepare data for mixed effects modelling
+
+```{r}
+# Change data for multilevel hypothesis tests 
+
+# Vector to prepare vignettes for dummy codes
+vignette_mapping <- c(
+  "HARKing_vignette_modified" = "HARKing",
+  "hide_imputation_vignette_modified" = "hide_imputation",
+  "hide_problems_vignette_modified" = "hide_problems",
+  "omit_studies_or_variables_vignette_modified" = "omit_studies",
+  "optional_stopping_vignette_modified" = "optional_stop",
+  "round_p_values_vignette_modified" = "round_p",
+  "selectively_include_covariates_vignette_modified" = "selective_covariate",
+  "selectively_report_outcomes_vignette_modified" = "selective_outcome",
+  "switch_analysis_selectively_vignette_modified" = "selective_analysis",
+  "underreport_results_vignette_modified" = "underreport_results",
+  "exclude_data_selectively_vignette_modified" = "exclude_data"
+)
+
+# Pivot the dataset and replace vignette names with corresponding numbers
+dat_long <- dat %>% 
+  pivot_longer(cols = ends_with("_modified"), 
+               names_to = "Vignette", 
+               values_to = "QRP_response") %>% 
+  mutate(
+    Vignette = recode(Vignette, !!!vignette_mapping),  # Recode vignette names
+    PPQr_mean_centered = PPQr_mean - mean(PPQr_mean, na.rm = TRUE),  # Mean center PPQr_mean
+    QRP_descriptive_mean_centered = QRP_descriptive_mean - mean(QRP_descriptive_mean, na.rm = TRUE), # Mean center descriptive norms
+    QRP_injunctive_mean_centered = QRP_injunctive_mean - mean(QRP_injunctive_mean, na.rm = TRUE)  # Mean center injunctive norms
+  )
+
+# Convert Vignette to a factor and set 'HARKing' as the baseline vignette
+dat_long$Vignette <- factor(dat_long$Vignette, 
+                             levels = c("HARKing",
+                                        "exclude_data",
+                                        "hide_imputation",
+                                        "hide_problems", 
+                                        "omit_studies", 
+                                        "optional_stop", 
+                                        "round_p", 
+                                        "selective_covariate", 
+                                        "selective_outcome", 
+                                        "selective_analysis",
+                                        "underreport_results"))
+
+# Data needs to be the same size to allow for model comparisons
+dat_long_hypothesis_2_4_6_with_missing <- dat_long %>% 
+  dplyr::select(PPQr_mean_centered, QRP_descriptive_mean_centered, QRP_injunctive_mean_centered, Vignette, response_id, QRP_response)
+
+dat_long_hypothesis_2_4_6 <- dat_long %>% 
+  dplyr::select(PPQr_mean_centered, QRP_descriptive_mean_centered, QRP_injunctive_mean_centered, Vignette, response_id, QRP_response) %>%
+  na.exclude()
+
+# Get estimates for the number of variables excluded
+with_missing <- nrow(dat_long_hypothesis_2_4_6_with_missing) 
+without_missing <- nrow(dat_long_hypothesis_2_4_6)
+removed <- with_missing - without_missing
+
+print(paste0("The total number of rows in the dataframe for hypotheses 2, 4, and 6, is ", with_missing, 
+             ". After excluding ", removed, " rows with missing values ", without_missing, " rows remain for hypothesis testing."))
+
+```
+
+```{r}
+# Fit null model (variance-component model)
+null_model <- lme4::lmer(
+  QRP_response ~ (1 | response_id),
+  data = dat_long_hypothesis_2_4_6,
+  na.action = na.omit
+)
+
+# Compute cluster robust standard errors
+tab_model(null_model, vcov.fun = "CR3", show.se = TRUE, show.stat = TRUE)
+```
+
+```{r}
+# Fit model with dummy codes
+dummy_model <- lme4::lmer(
+  QRP_response ~ Vignette + (1 | response_id),
+  data = dat_long_hypothesis_2_4_6,
+  na.action = na.omit
+)
+
+tab_model(dummy_model, vcov.fun = "CR3", show.se = TRUE, show.stat = TRUE)
+```
+
+# Hypothesis 2
+
+Organizational scientists’ reports of personally perceived publication pressure is positively related to the endorsement of various questionable research practices as a solution in case-study vignette dilemmas.
+
+```{r}
+# Fit the full model using lme4::lmer
+model_hypothesis_2 <- lme4::lmer(
+  QRP_response ~  Vignette + PPQr_mean_centered + (1 | response_id),
+  data = dat_long_hypothesis_2_4_6,
+  na.action = na.omit
+)
+
+
+# Fit it with nlme as well for model comparisons to nlme corSymm() model
+model_hypothesis_2_nlme <- nlme::lme(
+  fixed = QRP_response ~ Vignette + PPQr_mean_centered,  
+  random = ~ 1 | response_id, 
+  data = dat_long_hypothesis_2_4_6,
+  method = "REML",
+  na.action = na.omit 
+)
+
+# Fit it with ml for model comparisons
+model_hypothesis_2_nlme_ml <- nlme::lme(
+  fixed = QRP_response ~ PPQr_mean_centered + Vignette,  
+  random = ~ 1 | response_id, 
+  data = dat_long_hypothesis_2_4_6,
+  method = "ML",
+  na.action = na.omit 
+)
+
+summary(model_hypothesis_2)
+
+tab_model(
+  model_hypothesis_2, 
+  vcov.fun = "CR3", 
+  show.se = TRUE,
+  show.stat = TRUE)
+
+tab_model(
+  model_hypothesis_2, 
+  show.se = TRUE,
+  show.stat = TRUE)
+```
+
+```{r}
+# Model comparisons
+anova(null_model, dummy_model, model_hypothesis_2)
+```
+
+## Hypothesis 2 assumption checks and sensitivity analyses
+
+```{r}
+# Extract residuals
+residuals <- resid(model_hypothesis_2)
+fitted_values <- fitted(model_hypothesis_2)
+
+plot(residuals(model_hypothesis_2) ~ seq_along(residuals(model_hypothesis_2)))
+
+# Plot residuals vs. fitted values
+plot(fitted_values, residuals)
+abline(h = 0, col = "red")
+
+# Q-Q plot to check normality of residuals
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+# Check for autocorrelation
+par(mfrow = c(1, 2))
+acf(resid(model_hypothesis_2), main = "ACF")
+pacf(resid(model_hypothesis_2), main = "pACF")
+
+# Model checks
+performance::check_model(model_hypothesis_2)
+```
+
+```{r}
+# Account for autocorrelation
+
+# With corSymm
+model_hypothesis_2_Symm <- nlme::lme(
+  QRP_response ~ Vignette + PPQr_mean_centered, 
+  random = ~ 1 | response_id,
+  correlation = nlme::corSymm(form = ~ 1 | response_id),
+  data = dat_long_hypothesis_2_4_6,
+  method = "REML",
+  na.action = na.omit 
+)
+
+# With ML estimation to allow for comparisons
+model_hypothesis_2_Symm_ml <- nlme::lme(
+  QRP_response ~  Vignette + PPQr_mean_centered, 
+  random = ~ 1 | response_id,
+  correlation = nlme::corSymm(form = ~ 1 | response_id),
+  data = dat_long_hypothesis_2_4_6,
+  method = "ML",
+  na.action = na.omit 
+)
+
+tab_model(model_hypothesis_2_Symm, show.se = TRUE, show.ci = FALSE, show.stat = TRUE)
+```
+
+```{r}
+# Model comparisons of model with corSymm() to original model;
+nlme::anova.lme(model_hypothesis_2_nlme_ml, model_hypothesis_2_Symm_ml)
+
+# Assumption checks
+
+# Check for autocorrelation
+par(mfrow = c(1, 2))
+acf(resid(model_hypothesis_2_Symm), main = "ACF")
+pacf(resid(model_hypothesis_2_Symm), main = "pACF")
+
+# Model checks
+performance::check_model(model_hypothesis_2_Symm)
+```
+
+```{r}
+# GLMER model
+
+# Transform the response variable to be strictly positive
+dat_long_hypothesis_2_4_6$QRP_response_shifted <- dat_long_hypothesis_2_4_6$QRP_response + 6
+
+# Attempt Gamma model with an identity link with vignettes - convergence issues
+#model_hypothesis_2_identity <- glmer(
+ # QRP_response_shifted ~ PPQr_mean_centered + Vignette +
+  #(1 | response_id),
+  #data = dat_long_hypothesis_2_4_6, 
+  #family = Gamma(link = "identity")
+#)
+
+# Fit the Gamma model with an identity link, without vignette dummy codes
+model_hypothesis_2_identity <- glmer(
+  QRP_response_shifted ~ PPQr_mean_centered + 
+  (1 | response_id),
+  data = dat_long_hypothesis_2_4_6, 
+  family = Gamma(link = "identity")
+)
+
+summary(model_hypothesis_2_identity)
+tab_model(model_hypothesis_2_identity, show.se = TRUE, show.stat = TRUE, show.ci = FALSE)
+
+# Model checks# Model checks# Model checks
+performance::check_model(model_hypothesis_2_identity)
+```
+
+```{r}
+# Model comparisons
+# First fit a linear model with no dummy codes
+model_hypothesis_2_no_dummy <- lme4::lmer(
+  QRP_response ~ PPQr_mean_centered + (1 | response_id),
+  data = dat_long_hypothesis_2_4_6,
+  na.action = na.omit
+)
+
+anova(model_hypothesis_2_no_dummy, model_hypothesis_2_identity)
+```
+
+```{r}
+# Bootstrapped estimates
+# Fit a mixed-effects model using lme4
+model <- lmer(QRP_response ~ Vignette + PPQr_mean_centered + (1 | response_id), data = dat_long_hypothesis_2_4_6)
+
+# Bootstrapping
+set.seed(11)
+boot_results <- bootMer(
+  model, 
+  FUN = fixef,
+  nsim = 10000, 
+  type = "parametric" 
+)
+
+# Confidence intervals
+boot_ci_hypothesis_2 <- apply(boot_results$t, 2, quantile, probs = c(0.025, 0.975))
+print(round(boot_ci_hypothesis_2, 2))
+```
+
+# Hypothesis 3
+
+Descriptive norm perceptions of engagement in QRPs are positively related to organizational scientists reporting the use of various QRPs in a percentage of their studies.
+
+```{r}
+# Fit the model
+model_hypothesis_3 <- lm(QRP_use_mean ~ QRP_descriptive_mean_centered, data = dat)
+
+# Model summary
+summary(model_hypothesis_3)
+tab_model(model_hypothesis_3, show.se = TRUE, show.ci = FALSE)
+```
+
+```{r}
+# Get bootsrapped confidence intervals
+
+boot_fn <- function(data, indices) {
+  # Create bootstrap sample
+  boot_sample <- data[indices, ]
+  
+  # Fit linear model
+  model <- lm(QRP_use_mean ~ QRP_descriptive_mean_centered, data = boot_sample)
+  
+  # Return coefficients
+  return(coef(model))
+}
+
+# Perform bootstrapping
+set.seed(11)
+bootstrap_results <- boot(data = dat, statistic = boot_fn, R = 10000)
+
+# View the results
+print(bootstrap_results)
+
+# Confidence intervals for the intercept
+boot.ci(bootstrap_results, type = "perc", index = 1) # 1 for intercept
+
+# Confidence intervals for the first slope
+boot.ci(bootstrap_results, type = "perc", index = 2) # 2 for descriptive
+```
+
+## Hypothesis 3 assumption checks
+
+```{r}
+# Skewness and Kurtosis
+# QRP descriptive
+ci_skewness(dat$QRP_descriptive_mean_centered, R = 10000)
+ci_kurtosis(dat$QRP_descriptive_mean_centered, R = 10000)
+
+# Initial plots
+QuantPsyc::eda.uni(dat$QRP_descriptive_mean_centered)
+```
+
+```{r}
+# Plotted residuals - normality of residuals
+model_hypothesis_3 %>% 
+  residuals() %>% 
+  hist(main = "Histogram of Residuals", breaks = 30)
+
+par(mfrow = c(2, 2))
+plot(model_hypothesis_3)
+
+# Normality of residuals
+plot(model_hypothesis_3, which = 2)
+
+# Homoskedasticity
+plot(model_hypothesis_3, which = 1)
+
+# Outliers with Cook's Distance
+plot(model_hypothesis_3, which = 4)
+plot(model_hypothesis_3, which = 5)  # Residuals vs leverage
+
+performance::check_model(model_hypothesis_3)
+```
+
+```{r}
+# Linearity
+dat %>% 
+  ggplot(aes(x = PPQr_mean, y = QRP_use_mean)) +
+  geom_point() +
+  geom_smooth()
+```
+
+# Hypothesis 4
+
+Descriptive norm perceptions of engagement in QRPs are positively related to organizational scientists’ preference for various QRPs as a solution in case-study vignette dilemmas.
+
+```{r}
+model_hypothesis_4 <- lme4::lmer(
+  QRP_response ~  Vignette + QRP_descriptive_mean_centered + (1 | response_id),
+  data = dat_long_hypothesis_2_4_6,
+  na.action = na.omit
+)
+
+# Fit it with nlme
+model_hypothesis_4_nlme <- nlme::lme(
+  fixed = QRP_response ~ QRP_descriptive_mean_centered + Vignette,  
+  random = ~ 1 | response_id, 
+  data = dat_long_hypothesis_2_4_6,
+  na.action = na.omit 
+)
+
+# Fit it with nlme for model comparisons
+model_hypothesis_4_nlme_ml <- nlme::lme(
+  fixed = QRP_response ~ QRP_descriptive_mean_centered + Vignette,  
+  random = ~ 1 | response_id, 
+  data = dat_long_hypothesis_2_4_6,
+  method = "ML",
+  na.action = na.omit 
+)
+
+summary(model_hypothesis_4)
+tab_model(model_hypothesis_4, vcov.fun = "CR3", show.se = TRUE, show.stat = TRUE)
+```
+
+```{r}
+# Compare with dummy model
+anova(dummy_model, model_hypothesis_4)
+```
+
+## Hypothesis 4 assumption checks and sensitivity analyses
+
+```{r}
+# Extract residuals
+residuals <- resid(model_hypothesis_4)
+fitted_values <- fitted(model_hypothesis_4)
+
+plot(residuals(model_hypothesis_4) ~ seq_along(residuals(model_hypothesis_4)))
+
+# Plot residuals vs. fitted values
+plot(fitted_values, residuals)
+abline(h = 0, col = "red")
+
+# Q-Q plot to check normality of residuals
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+# Check for autocorrelation
+par(mfrow = c(1, 2))
+acf(resid(model_hypothesis_4), main = "ACF")
+pacf(resid(model_hypothesis_4), main = "pACF")
+
+# Model checks
+performance::check_model(model_hypothesis_4)
+```
+
+```{r}
+# Account for autocorrelation
+
+# With corSymm
+model_hypothesis_4_Symm <- nlme::lme(
+  QRP_response ~ Vignette + QRP_descriptive_mean_centered, 
+  random = ~ 1 | response_id,
+  correlation = nlme::corSymm(form = ~ 1 | response_id),
+  data = dat_long_hypothesis_2_4_6,
+  method = "REML",
+  na.action = na.omit 
+)
+
+# ML for model comparisons
+model_hypothesis_4_Symm_ml <- nlme::lme(
+  QRP_response ~ Vignette + QRP_descriptive_mean_centered, 
+  random = ~ 1 | response_id,
+  correlation = nlme::corSymm(form = ~ 1 | response_id),
+  data = dat_long_hypothesis_2_4_6,
+  method = "ML",
+  na.action = na.omit 
+)
+
+summary(model_hypothesis_4_Symm)
+tab_model(model_hypothesis_4_Symm, show.se = TRUE, show.ci = FALSE, show.stat = TRUE)
+```
+
+```{r}
+# Model comparisons of model with corSymm() to original model;
+nlme::anova.lme(model_hypothesis_4_nlme_ml, model_hypothesis_4_Symm_ml)
+
+# Assumption checks
+
+# Check for autocorrelation
+par(mfrow = c(1, 2))
+acf(resid(model_hypothesis_4_Symm), main = "ACF")
+pacf(resid(model_hypothesis_4_Symm), main = "pACF")
+
+# Model checks
+performance::check_model(model_hypothesis_4_Symm)
+```
+
+```{r}
+# GLMER
+
+# Fit the Gamma model with an identity link
+model_hypothesis_4_identity <- glmer(
+  QRP_response_shifted ~ QRP_descriptive_mean_centered + 
+  (1 | response_id),
+  data = dat_long_hypothesis_2_4_6, 
+  family = Gamma(link = "identity")
+)
+
+summary(model_hypothesis_4_identity)
+
+tab_model(model_hypothesis_4_identity, show.se = TRUE, show.ci = FALSE, show.stat = TRUE)
+
+performance::check_model(model_hypothesis_4_identity)
+```
+
+```{r}
+# Model comparisons
+# First fit a linear model with no dummy codes
+model_hypothesis_4_no_dummy <- lme4::lmer(
+  QRP_response ~ QRP_descriptive_mean_centered + (1 | response_id),
+  data = dat_long_hypothesis_2_4_6,
+  na.action = na.omit
+)
+
+anova(model_hypothesis_4_no_dummy, model_hypothesis_4_identity)
+```
+
+```{r}
+# Bootstrapped estimates
+# Fit a mixed-effects model using lme4
+model <- lmer(QRP_response ~ Vignette + QRP_descriptive_mean_centered + (1 | response_id), data = dat_long_hypothesis_2_4_6)
+
+# Bootstrapping
+set.seed(11)
+boot_results <- bootMer(
+  model, 
+  FUN = fixef,
+  nsim = 10000, 
+  type = "parametric" 
+)
+
+# Confidence intervals
+boot_ci_hypothesis_4 <- apply(boot_results$t, 2, quantile, probs = c(0.025, 0.975))
+print(boot_ci_hypothesis_4)
+```
+
+# Hypothesis 5
+
+Injunctive norm perceptions of engagement in QRPs are positively related to organizational scientists reporting the use of various QRPs in a percentage of their studies.
+
+```{r}
+model_hypothesis_5 <- lm(QRP_use_mean ~ QRP_injunctive_mean_centered, data = dat)
+
+summary(model_hypothesis_5)
+
+tab_model(model_hypothesis_5, show.se = TRUE, show.ci = FALSE)
+```
+
+```{r}
+# Get bootsrapped confidence intervals
+boot_fn <- function(data, indices) {
+  # Create bootstrap sample
+  boot_sample <- data[indices, ]
+  
+  # Fit linear model
+  model <- lm(QRP_use_mean ~ QRP_injunctive_mean_centered, data = boot_sample)
+  
+  # Return coefficients
+  return(coef(model))
+}
+
+# Perform bootstrapping
+set.seed(11)
+bootstrap_results <- boot(data = dat, statistic = boot_fn, R = 10000)
+
+# View the results
+print(bootstrap_results)
+
+# Confidence intervals for the intercept
+boot.ci(bootstrap_results, type = "perc", index = 1) # 1 for intercept
+
+# Confidence intervals for the first slope
+boot.ci(bootstrap_results, type = "perc", index = 2) # 2 for injunctive
+```
+
+## Hypothesis 5 assumption checks
+
+```{r}
+# Skewness and Kurtosis
+# QRP injunctive
+ci_skewness(dat$QRP_injunctive_mean, R = 10000)
+ci_kurtosis(dat$QRP_injunctive_mean, R = 10000)
+
+# Plots
+QuantPsyc::eda.uni(dat$QRP_injunctive_mean)
+```
+
+```{r}
+# Plotted residuals - normality of residuals
+model_hypothesis_5 %>% 
+  residuals() %>% 
+  hist(main = "Histogram of Residuals", breaks = 30)
+
+par(mfrow = c(2, 2))
+plot(model_hypothesis_5)
+
+# Normality of residuals
+plot(model_hypothesis_5, which = 2)
+ggplot() +
+  geom_qq(aes(sample = rstandard(model_hypothesis_5))) +
+  geom_abline(color = "red") +
+  coord_fixed()
+
+# Homoskedasticity
+plot(model_hypothesis_5, which = 1)
+
+# Outliers with Cook's Distance
+plot(model_hypothesis_5, which = 4)
+plot(model_hypothesis_5, which = 5)  # Residuals vs leverage
+
+performance::check_model(model_hypothesis_5)
+```
+
+```{r}
+# Linearity
+dat %>% 
+  ggplot(aes(x = QRP_injunctive_mean, y = QRP_use_mean)) +
+  geom_point() +
+  geom_smooth()
+```
+
+# Hypothesis 6
+
+Injunctive norm perceptions of engagement in QRPs are positively related to organizational scientists’ preference for various QRPs as a solution in case-study vignette dilemmas.
+
+```{r}
+# With lmer
+model_hypothesis_6 <- lmerTest::lmer(
+  QRP_response ~ Vignette + QRP_injunctive_mean_centered + (1 | response_id), 
+  data = dat_long_hypothesis_2_4_6, 
+  na.action = na.omit)
+
+# Fit it with lme
+model_hypothesis_6_nlme <- nlme::lme(
+  fixed = QRP_response ~ QRP_injunctive_mean_centered + Vignette,  
+  random = ~ 1 | response_id, 
+  data = dat_long_hypothesis_2_4_6,
+  na.action = na.omit 
+)
+
+# With ML for model comparison
+model_hypothesis_6_nlme_ml <- nlme::lme(
+  fixed = QRP_response ~ QRP_injunctive_mean_centered + Vignette,  
+  random = ~ 1 | response_id, 
+  data = dat_long_hypothesis_2_4_6,
+  method = "ML",
+  na.action = na.omit 
+)
+
+summary(model_hypothesis_6)
+tab_model(model_hypothesis_6, vcov.fun = "CR3", show.se = TRUE, show.stat = TRUE)
+```
+
+```{r}
+# Model comparisons, with dummy model
+anova(dummy_model, model_hypothesis_6)
+```
+
+## Hypothesis 6 assumption checks and sensitivity analyses
+
+```{r}
+# Extract residuals
+residuals <- resid(model_hypothesis_6)
+fitted_values <- fitted(model_hypothesis_6)
+
+plot(residuals(model_hypothesis_6) ~ seq_along(residuals(model_hypothesis_6)))
+
+# Plot residuals vs. fitted values
+plot(fitted_values, residuals)
+abline(h = 0, col = "red")
+
+# Q-Q plot to check normality of residuals
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+# Check for autocorrelation
+par(mfrow = c(1, 2))
+acf(resid(model_hypothesis_6), main = "ACF")
+pacf(resid(model_hypothesis_6), main = "pACF")
+
+# Model checks
+performance::check_model(model_hypothesis_6)
+```
+
+```{r}
+# Account for autocorrelation
+
+# With corSymm
+model_hypothesis_6_Symm <- nlme::lme(
+  QRP_response ~  Vignette + QRP_injunctive_mean_centered, 
+  random = ~ 1 | response_id,
+  correlation = nlme::corSymm(form = ~ 1 | response_id),
+  data = dat_long_hypothesis_2_4_6,
+  method = "REML",
+  na.action = na.omit 
+)
+
+# With ML for model comparison
+
+model_hypothesis_6_Symm_ml <- nlme::lme(
+  QRP_response ~ Vignette + QRP_injunctive_mean_centered, 
+  random = ~ 1 | response_id,
+  correlation = nlme::corSymm(form = ~ 1 | response_id),
+  data = dat_long_hypothesis_2_4_6,
+  method = "ML",
+  na.action = na.omit 
+)
+
+tab_model(model_hypothesis_6_Symm, show.se = TRUE, show.ci = FALSE, show.stat = TRUE)
+```
+
+```{r}
+# Model comparison
+nlme::anova.lme(model_hypothesis_6_nlme_ml, model_hypothesis_6_Symm_ml)
+
+# Assumption checks
+
+# Check for autocorrelation
+par(mfrow = c(1, 2))
+acf(resid(model_hypothesis_6_Symm), main = "ACF")
+pacf(resid(model_hypothesis_6_Symm), main = "pACF")
+
+# Model checks
+performance::check_model(model_hypothesis_6_Symm)
+```
+
+```{r}
+# GLMER
+
+# Fit the Gamma model with an identity link
+model_hypothesis_6_identity <- glmer(
+  QRP_response_shifted ~ QRP_injunctive_mean_centered +
+  (1 | response_id),
+  data = dat_long_hypothesis_2_4_6, 
+  family = Gamma(link = "identity")
+)
+
+summary(model_hypothesis_6_identity)
+tab_model(model_hypothesis_6_identity, show.se = TRUE, show.ci = FALSE, show.stat = TRUE)
+
+performance::check_model(model_hypothesis_6_identity)
+```
+
+```{r}
+# Model comparisons
+# First fit a linear model with no dummy codes
+model_hypothesis_6_no_dummy <- lme4::lmer(
+  QRP_response ~ QRP_injunctive_mean_centered + (1 | response_id),
+  data = dat_long_hypothesis_2_4_6,
+  na.action = na.omit
+)
+
+anova(model_hypothesis_6_no_dummy, model_hypothesis_6_identity)
+```
+
+```{r}
+# Get bootstrapped estimates
+# Fit a mixed-effects model using lme4
+model <- lmer(QRP_response ~ Vignette + QRP_injunctive_mean_centered + (1 | response_id), data = dat_long_hypothesis_2_4_6)
+
+# Bootstrapping
+set.seed(11)
+boot_results <- bootMer(
+  model, 
+  FUN = fixef,
+  nsim = 10000, 
+  type = "parametric" 
+)
+
+# Confidence intervals
+boot_ci_hypothesis_6 <- apply(boot_results$t, 2, quantile, probs = c(0.025, 0.975))
+print(boot_ci_hypothesis_6)
+```
+
+# Hypothesis 7
+
+Injunctive norm perceptions of engagement in QRPs positively moderate the relationship between descriptive norm perceptions and organizational scientists’ use of various QRPs in a percentage of their studies.
+
+```{r}
+# Main effects model
+model_hypothesis_7_main_effects <- lm(QRP_use_mean ~ QRP_descriptive_mean_centered + QRP_injunctive_mean_centered, data = dat)
+summary(model_hypothesis_7_main_effects)
+tab_model(model_hypothesis_7_main_effects, show.se = TRUE, show.ci = FALSE)
+```
+
+```{r}
+# Interaction model
+model_hypothesis_7_interaction <- lm(QRP_use_mean ~ QRP_descriptive_mean_centered * QRP_injunctive_mean_centered, data = dat)
+summary(model_hypothesis_7_interaction)
+tab_model(model_hypothesis_7_interaction, show.se = TRUE, show.ci = FALSE)
+
+# Examine incremental fit
+anova(model_hypothesis_7_main_effects, model_hypothesis_7_interaction)
+
+# Change in R-squared
+summary(model_hypothesis_7_interaction)$fstatistic[1] - summary(model_hypothesis_7_main_effects)$fstatistic[1]
+
+summary(model_hypothesis_7_interaction)$r.squared - summary(model_hypothesis_7_main_effects)$r.squared
+```
+
+```{r}
+# Get bootstrapped estimates
+
+# Main effects
+boot_fn <- function(data, indices) {
+  # Create bootstrap sample
+  boot_sample <- data[indices, ]
+  
+  # Fit linear model
+  model <- lm(QRP_use_mean ~ QRP_descriptive_mean_centered + QRP_injunctive_mean_centered, data = boot_sample)
+  
+  # Return coefficients
+  return(coef(model))
+}
+
+# Perform bootstrapping
+set.seed(11)
+bootstrap_results <- boot(data = dat, statistic = boot_fn, R = 10000)
+
+# View the results
+print(bootstrap_results)
+
+# Confidence intervals for the intercept
+boot.ci(bootstrap_results, type = "perc", index = 1) # 1 for intercept
+
+# Confidence intervals for the first slope
+boot.ci(bootstrap_results, type = "perc", index = 2) # 2 for QRP Descriptive
+
+# Confidence intervals for the second slope
+boot.ci(bootstrap_results, type = "perc", index = 3) # 3 for QRP Injunctive
+
+# Interaction
+boot_fn <- function(data, indices) {
+  # Create bootstrap sample
+  boot_sample <- data[indices, ]
+  
+  # Fit linear model
+  model <- lm(QRP_use_mean ~ QRP_descriptive_mean_centered * QRP_injunctive_mean_centered, data = boot_sample)
+  
+  # Return coefficients (or another statistic, e.g., R-squared)
+  return(coef(model))
+}
+
+# Perform bootstrapping
+set.seed(11)
+bootstrap_results <- boot(data = dat, statistic = boot_fn, R = 10000)
+
+# View the results
+print(bootstrap_results)
+
+# Confidence intervals for the intercept
+boot.ci(bootstrap_results, type = "perc", index = 1) # 1 for intercept
+
+# Confidence intervals for the first slope
+boot.ci(bootstrap_results, type = "perc", index = 2) # 2 for QRP Descriptive
+
+# Confidence intervals for the second slope
+boot.ci(bootstrap_results, type = "perc", index = 3) # 3 for QRP Injunctive
+
+# Confidence intervals for the third slope
+boot.ci(bootstrap_results, type = "perc", index = 4) # 4 for QRP Descriptive x Injunctive
+```
+
+```{r}
+# Predict simple slopes
+sjPlot::tab_model(model_hypothesis_7_main_effects, model_hypothesis_7_interaction, show.se = TRUE, show.ci = FALSE, 
+                  show.p = TRUE, emph.p = FALSE, string.est = "B", string.se = "SE")
+
+# Get simple slopes
+reghelper::simple_slopes(model_hypothesis_7_interaction)[4:6,]
+
+# Plot the simple slopes
+simple_slopes <- sjPlot::plot_model(model_hypothesis_7_interaction, type = "int", mdrt.values = "meansd", ci.lvl = NA)
+
+# Modify the plot
+simple_slopes <- simple_slopes +
+  labs(
+    title = "Predicted values of QRP Use",
+    y = "QRP Use",
+    x = "Descriptive Norms"
+  ) +
+  scale_x_continuous(
+    limits = c(-60, 60)
+  ) +
+  scale_color_manual(
+    name = "QRP Injunctive",
+    labels = c("-1 SD", "Mean", "+1 SD"),
+    values = c("#E69F00", "#56B4E9", "#009E73") 
+  )
+
+# Display the plot
+print(simple_slopes)
+
+ggsave("simple_slopes_plot.png", plot = simple_slopes, width = 6.5, height = 4.5, units = "in", dpi = 300)
+```
+
+```{r}
+# Calculate relative weights
+calc.relimp(model_hypothesis_7_interaction)$lmg %>% round(digits = 3)
+
+# Get rescaled relative weights
+round(calc.relimp(model_hypothesis_7_interaction)$lmg / .1735 * 100, 3)
+```
+
+## Hypothesis 7 assumption checks
+
+```{r}
+# Plotted residuals - normality of residuals
+model_hypothesis_7_interaction %>% 
+  residuals() %>% 
+  hist(main = "Histogram of Residuals", breaks = 30)
+
+par(mfrow = c(2, 2))
+plot(model_hypothesis_7_interaction)
+
+# Normality of residuals
+plot(model_hypothesis_7_interaction, which = 2)
+ggplot() +
+  geom_qq(aes(sample = rstandard(model_hypothesis_7_main_effects))) +
+  geom_abline(color = "red") +
+  coord_fixed()
+
+# Homoskedasticity
+plot(model_hypothesis_7_interaction, which = 1)
+
+
+# Outliers with Cook's Distance
+plot(model_hypothesis_7_interaction, which = 4)
+plot(model_hypothesis_7_interaction, which = 5)  # Residuals vs leverage
+
+performance::check_model(model_hypothesis_7_interaction)
+```
+
+# Hypothesis 8
+
+Injunctive norm perceptions of engagement in QRPs positively moderate the relationship between descriptive norm perceptions and organizational scientists’ preference for various QRPs as a solution in case-study vignette dilemmas.
+
+```{r}
+# Main effects model
+model_hypothesis_8 <- lmerTest::lmer(QRP_response ~ Vignette + QRP_descriptive_mean_centered + QRP_injunctive_mean_centered + (1 | response_id), data = dat_long)
+
+summary(model_hypothesis_8)
+
+tab_model(model_hypothesis_8, vcov.fun = "CR3", show.se = TRUE, show.stat = TRUE)
+```
+
+```{r}
+# Fit interaction model
+model_hypothesis_8_interaction <- lmerTest::lmer(QRP_response ~ Vignette + QRP_descriptive_mean_centered * QRP_injunctive_mean_centered + (1 | response_id), data = dat_long)
+
+tab_model(model_hypothesis_8_interaction, vcov.fun = "CR3", show.se = TRUE, show.stat = TRUE)
+tab_model(model_hypothesis_8_interaction, show.se = TRUE, show.stat = TRUE)
+# Model comparison
+anova(model_hypothesis_8, model_hypothesis_8_interaction)
+```
+
+## Hypothesis 8 assumption checks and sensitivity analyses
+
+```{r}
+# Assumption checks for interaction
+# Extract residuals
+residuals <- resid(model_hypothesis_8_interaction)
+fitted_values <- fitted(model_hypothesis_8_interaction)
+
+plot(residuals(model_hypothesis_8_interaction) ~ seq_along(residuals(model_hypothesis_8_interaction)))
+
+# Plot residuals vs. fitted values
+plot(fitted_values, residuals)
+abline(h = 0, col = "red")
+
+# Q-Q plot to check normality of residuals
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+# Check for autocorrelation
+par(mfrow = c(1, 2))
+acf(resid(model_hypothesis_8_interaction), main = "ACF")
+pacf(resid(model_hypothesis_8_interaction), main = "pACF")
+
+# Model checks
+performance::check_model(model_hypothesis_8_interaction)
+```
+
+```{r}
+# GLMER
+# Transform the response variable to be strictly positive
+dat_long$QRP_response_shifted <- dat_long$QRP_response + 6
+
+# Fit the Gamma model with an identity link - Main effects
+model_hypothesis_8_identity <- glmer(
+  QRP_response_shifted ~ QRP_descriptive_mean_centered + QRP_injunctive_mean_centered +
+  (1 | response_id),
+  data = dat_long, 
+  family = Gamma(link = "identity")
+)
+
+tab_model(model_hypothesis_8_identity, show.se = TRUE, show.ci = FALSE, show.stat = TRUE)
+
+# Fit the Gamma model with an identity link and interaction
+model_hypothesis_8_identity_interaction <- glmer(
+  QRP_response_shifted ~ QRP_descriptive_mean_centered * QRP_injunctive_mean_centered +
+  (1 | response_id),
+  data = dat_long, 
+  family = Gamma(link = "identity")
+)
+
+
+tab_model(model_hypothesis_8_identity_interaction, show.se = TRUE, show.ci = FALSE, show.stat = TRUE)
+summary(model_hypothesis_8_identity_interaction)
+
+# Compare GLMER models
+anova(model_hypothesis_8_identity, model_hypothesis_8_identity_interaction)
+
+performance::check_model(model_hypothesis_8_identity_interaction)
+```
+
+```{r}
+# Model comparisons
+# Fit models without dummy codes, and then compare to GLMER
+model_hypothesis_8_no_dummy_main <- lmer(QRP_response ~ QRP_descriptive_mean_centered + QRP_injunctive_mean_centered  + (1 | response_id), data = dat_long)
+model_hypothesis_8_no_dummy_interaction <- lmer(QRP_response ~ QRP_descriptive_mean_centered * QRP_injunctive_mean_centered  + (1 | response_id), data = dat_long)
+
+anova(model_hypothesis_8_no_dummy_main, model_hypothesis_8_identity)
+anova(model_hypothesis_8_no_dummy_interaction, model_hypothesis_8_identity_interaction)
+```
+
+```{r}
+# Bootstrapped estimates
+# For main effects
+model <- lmer(QRP_response ~ Vignette + QRP_descriptive_mean_centered + QRP_injunctive_mean_centered + (1 | response_id), data = dat_long)
+
+# Bootstrapping
+set.seed(11)
+boot_results <- bootMer(
+  model, 
+  FUN = fixef,
+  nsim = 10000, 
+  type = "parametric" 
+)
+
+# Confidence intervals
+boot_ci_hypothesis_8_main <- apply(boot_results$t, 2, quantile, probs = c(0.025, 0.975))
+print(boot_ci_hypothesis_8_main)
+
+# For interaction
+model <- lmer(QRP_response ~ Vignette + QRP_descriptive_mean_centered * QRP_injunctive_mean_centered + (1 | response_id), data = dat_long)
+
+# Bootstrapping
+set.seed(11)
+boot_results <- bootMer(
+  model, 
+  FUN = fixef,
+  nsim = 10000, 
+  type = "parametric" 
+)
+
+# Confidence intervals
+boot_ci_hypothesis_8_interaction <- apply(boot_results$t, 2, quantile, probs = c(0.025, 0.975))
+print(boot_ci_hypothesis_8_interaction)
+```
+
+# Hypothesis 9
+
+Injunctive and descriptive norm perceptions of QRPs explains incremental variance beyond personally perceived publication pressure in organizational scientists’ use of various QRPs in a percentage of their studies.
+
+```{r}
+# Deal with missing data to allow for model comparisons
+dat_hypothesis_9 <- dat %>% 
+  dplyr::select(QRP_use_mean, PPQr_mean_centered, QRP_descriptive_mean_centered, QRP_injunctive_mean_centered) %>% 
+  na.exclude()
+
+# Get estimates for the number of variables excluded
+dat_hypothesis_9_with_missing <- dat %>% 
+  dplyr::select(QRP_use_mean, PPQr_mean_centered, QRP_descriptive_mean_centered, QRP_injunctive_mean_centered)
+
+with_missing <- nrow(dat_hypothesis_9_with_missing) 
+without_missing <- nrow(dat_hypothesis_9)
+removed <- with_missing - without_missing
+missing_in_outcome <- sum(is.na(dat$QRP_use_mean))
+
+print(paste0("The total number of rows in the dataframe for hypothesis 9 is ", with_missing, 
+             ". After excluding ", removed, " rows with missing values ", without_missing, " rows remain for hypothesis testing. Of those excluded ", 
+             missing_in_outcome, " are missing in the outcome."))
+```
+
+```{r}
+# Model with just publication pressure
+model_hypothesis_9.1 <- lm(QRP_use_mean ~ PPQr_mean_centered, data = dat_hypothesis_9)
+
+summary(model_hypothesis_9.1)
+tab_model(model_hypothesis_9.1, show.se = TRUE, show.ci = FALSE)
+```
+
+```{r}
+# Add in descriptive QRP
+model_hypothesis_9.2 <- lm(QRP_use_mean ~ PPQr_mean_centered + QRP_descriptive_mean_centered, data = dat_hypothesis_9)
+
+summary(model_hypothesis_9.2)
+tab_model(model_hypothesis_9.2, show.se = TRUE, show.ci = FALSE)
+
+summary(model_hypothesis_9.2)$r.squared - summary(model_hypothesis_9.1)$r.squared 
+summary(model_hypothesis_9.2)$fstatistic[1] - summary(model_hypothesis_9.1)$fstatistic[1]
+```
+
+```{r}
+# Add in injunctive QRP
+model_hypothesis_9.3 <- lm(QRP_use_mean ~ PPQr_mean_centered + QRP_descriptive_mean_centered + QRP_injunctive_mean_centered, data = dat)
+summary(model_hypothesis_9.3)
+tab_model(model_hypothesis_9.3, show.ci = FALSE, show.se = TRUE)
+
+summary(model_hypothesis_9.3)$r.squared - summary(model_hypothesis_9.2)$r.squared 
+summary(model_hypothesis_9.3)$fstatistic[1] - summary(model_hypothesis_9.2)$fstatistic[1]
+```
+
+```{r}
+# Model with interaction
+model_hypothesis_9.4 <- lm(QRP_use_mean ~ PPQr_mean_centered + QRP_descriptive_mean_centered * QRP_injunctive_mean_centered, data = dat_hypothesis_9)
+summary(model_hypothesis_9.4)
+tab_model(model_hypothesis_9.4, show.se = FALSE, show.ci = FALSE)
+
+summary(model_hypothesis_9.4)$r.squared - summary(model_hypothesis_9.3)$r.squared 
+summary(model_hypothesis_9.4)$fstatistic[1] - summary(model_hypothesis_9.3)$fstatistic[1]
+```
+
+```{r}
+# Model comparisons
+anova(model_hypothesis_9.1, model_hypothesis_9.2, model_hypothesis_9.3, model_hypothesis_9.4)
+
+# Get relative importance weights
+calc.relimp(model_hypothesis_9.4)$lmg %>% round(digits = 3)
+
+# Get rescaled relative weights
+round(calc.relimp(model_hypothesis_9.4)$lmg / .177 * 100, 3)
+```
+
+## Hypothesis 9 assumption checks
+
+```{r}
+# Residual checks
+model_hypothesis_9.4 %>% 
+  residuals() %>% 
+  hist(main = "Histogram of Residuals", breaks = 30)
+
+par(mfrow = c(2, 2))
+plot(model_hypothesis_9.4)
+plot(model_hypothesis_9.4, which = 2)
+plot(model_hypothesis_9.4, which = 1)
+
+# Outliers with Cook's Distance
+plot(model_hypothesis_9.4, which = 4)
+
+performance::check_model(model_hypothesis_9.4)
+```
+
+```{r}
+# Get bootstrapped estimates for each of the models
+
+# Model 1
+
+boot_fn <- function(data, indices) {
+  # Create bootstrap sample
+  boot_sample <- data[indices, ]
+  
+  # Fit linear model
+  model <- lm(QRP_use_mean ~ PPQr_mean_centered, data = boot_sample)
+  
+  # Return coefficients
+  return(coef(model))
+}
+
+# Perform bootstrapping
+set.seed(11)
+bootstrap_results <- boot(data = dat_hypothesis_9, statistic = boot_fn, R = 10000)
+
+# View the results
+print(bootstrap_results)
+
+# Confidence intervals for the intercept
+boot.ci(bootstrap_results, type = "perc", index = 1) # 1 for intercept
+
+# Confidence intervals for the first slope
+boot.ci(bootstrap_results, type = "perc", index = 2) # 2 for ppqr
+
+# Model 2
+
+boot_fn <- function(data, indices) {
+  # Create bootstrap sample
+  boot_sample <- data[indices, ]
+  
+  # Fit linear model
+  model <- lm(QRP_use_mean ~ PPQr_mean_centered + QRP_descriptive_mean_centered, data = boot_sample)
+  
+  # Return coefficients
+  return(coef(model))
+}
+
+# Perform bootstrapping
+set.seed(11)
+bootstrap_results <- boot(data = dat_hypothesis_9, statistic = boot_fn, R = 10000)
+
+# View the results
+print(bootstrap_results)
+
+# Confidence intervals for the intercept
+boot.ci(bootstrap_results, type = "perc", index = 1) # 1 for intercept
+
+# Confidence intervals for the first slope
+boot.ci(bootstrap_results, type = "perc", index = 2) # 2 for ppqr
+
+# Confidence intervals for the second slope
+boot.ci(bootstrap_results, type = "perc", index = 3) # 3 for QRP descriptive
+
+# Model 3
+
+boot_fn <- function(data, indices) {
+  # Create bootstrap sample
+  boot_sample <- data[indices, ]
+  
+  # Fit linear model
+  model <- lm(QRP_use_mean ~ PPQr_mean_centered + QRP_descriptive_mean_centered + QRP_injunctive_mean_centered, data = boot_sample)
+  
+  # Return coefficients
+  return(coef(model))
+}
+
+# Perform bootstrapping
+set.seed(11)
+bootstrap_results <- boot(data = dat_hypothesis_9, statistic = boot_fn, R = 10000)
+
+# View the results
+print(bootstrap_results)
+
+# Confidence intervals for the intercept
+boot.ci(bootstrap_results, type = "perc", index = 1) # 1 for intercept
+
+# Confidence intervals for the first slope
+boot.ci(bootstrap_results, type = "perc", index = 2) # 2 for ppqr
+
+# Confidence intervals for the second slope
+boot.ci(bootstrap_results, type = "perc", index = 3) # 3 for QRP descriptive
+
+# Confidence intervals for the third slope
+boot.ci(bootstrap_results, type = "perc", index = 4) # 4 for QRP injunctive
+
+# Model 4
+
+boot_fn <- function(data, indices) {
+  # Create bootstrap sample
+  boot_sample <- data[indices, ]
+  
+  # Fit linear model
+  model <- lm(QRP_use_mean ~ PPQr_mean_centered + QRP_descriptive_mean_centered * QRP_injunctive_mean_centered, data = boot_sample)
+  
+  # Return coefficients
+  return(coef(model))
+}
+
+# Perform bootstrapping
+set.seed(11)
+bootstrap_results <- boot(data = dat_hypothesis_9, statistic = boot_fn, R = 10000)
+
+# View the results
+print(bootstrap_results)
+
+# Confidence intervals for the intercept
+boot.ci(bootstrap_results, type = "perc", index = 1) # 1 for intercept
+
+# Confidence intervals for the first slope
+boot.ci(bootstrap_results, type = "perc", index = 2) # 2 for ppqr
+
+# Confidence intervals for the second slope
+boot.ci(bootstrap_results, type = "perc", ndex = 3) # 3 for QRP descriptive
+
+# Confidence intervals for the third slope
+boot.ci(bootstrap_results, type = "perc", index = 4) # 4 for QRP injunctive
+
+# Confidence intervals for the interaction
+boot.ci(bootstrap_results, type = "perc", index = 5) # 5 for QRP interaction
+```
+
+# Hypothesis 10
+
+Injunctive and descriptive norm perceptions of QRPs explains incremental variance beyond personally perceived publication pressure in organizational scientists’ preference for various QRPs as a solution in case-study vignette dilemmas.
+
+```{r}
+# Drop missing values to allow for model comparisons
+dat_hypothesis_10 <- dat_long %>% 
+  dplyr::select(QRP_response, PPQr_mean_centered, QRP_descriptive_mean_centered, QRP_injunctive_mean_centered, Vignette, response_id) %>% 
+  na.exclude()
+
+# First model just with publication pressure 
+model_hypothesis_10.1 <- lme4::lmer(
+  QRP_response ~ Vignette + PPQr_mean_centered + (1 | response_id),  
+  data = dat_hypothesis_10,
+  REML = T,
+  na.action = na.omit
+)
+
+summary(model_hypothesis_10.1)
+tab_model(model_hypothesis_10.1, vcov.fun = "CR3", show.se = TRUE, show.stat = TRUE)
+```
+
+```{r}
+# Add in descriptive QRP
+model_hypothesis_10.2 <- lme4::lmer(
+  QRP_response ~ Vignette + PPQr_mean_centered + QRP_descriptive_mean_centered + (1 | response_id),  
+  data = dat_hypothesis_10,
+  REML = T,
+  na.action = na.omit
+)
+
+summary(model_hypothesis_10.2)
+tab_model(model_hypothesis_10.2, vcov.fun = "CR3", show.se = TRUE, show.stat = TRUE)
+```
+
+```{r}
+# Add in injunctive QRP 
+model_hypothesis_10.3 <- lme4::lmer(
+  QRP_response ~ Vignette + PPQr_mean_centered + QRP_descriptive_mean_centered + QRP_injunctive_mean_centered + (1 | response_id),  
+  data = dat_hypothesis_10,
+  REML = T,
+  na.action = na.omit
+)
+
+summary(model_hypothesis_10.3)
+tab_model(model_hypothesis_10.3, vcov.fun = "CR3", show.se = TRUE, show.stat = TRUE)
+
+# Test of comparative fit
+anova(model_hypothesis_10.1, model_hypothesis_10.2, model_hypothesis_10.3)
+```
+
+## Hypothesis 10 assumption checks and sensitivity analyses
+
+```{r}
+# Assumption checks for model 2
+
+# Extract residuals
+residuals <- resid(model_hypothesis_10.2)
+fitted_values <- fitted(model_hypothesis_10.2)
+
+plot(residuals(model_hypothesis_10.2) ~ seq_along(residuals(model_hypothesis_10.2)))
+
+# Plot residuals vs. fitted values
+plot(fitted_values, residuals)
+abline(h = 0, col = "red")
+
+# Q-Q plot to check normality of residuals
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+# Check for autocorrelation
+par(mfrow = c(1, 2))
+acf(resid(model_hypothesis_10.2), main = "ACF")
+pacf(resid(model_hypothesis_10.2), main = "pACF")
+
+# Model checks
+performance::check_model(model_hypothesis_10.2)
+```
+
+```{r}
+# Assumption checks for model 3
+
+# Extract residuals
+residuals <- resid(model_hypothesis_10.3)
+fitted_values <- fitted(model_hypothesis_10.3)
+
+plot(residuals(model_hypothesis_10.3) ~ seq_along(residuals(model_hypothesis_10.3)))
+
+# Plot residuals vs. fitted values
+plot(fitted_values, residuals)
+abline(h = 0, col = "red")
+
+# Q-Q plot to check normality of residuals
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+# Check for autocorrelation
+par(mfrow = c(1, 2))
+acf(resid(model_hypothesis_10.3), main = "ACF")
+pacf(resid(model_hypothesis_10.3), main = "pACF")
+
+# Model checks
+performance::check_model(model_hypothesis_10.3)
+```
+
+```{r}
+# GLMER
+# Transform the response variable to be strictly positive
+dat_hypothesis_10$QRP_response_shifted <- dat_hypothesis_10$QRP_response + 6
+
+# Fit the Gamma model with an identity link - Model 1
+model_hypothesis_10.1_identity <- glmer(
+  QRP_response_shifted ~ PPQr_mean_centered +
+  (1 | response_id),
+  data = dat_hypothesis_10, 
+  family = Gamma(link = "identity")
+)
+
+tab_model(model_hypothesis_10.1_identity, show.se = TRUE, show.ci = FALSE, show.stat = TRUE)
+
+# Fit the Gamma model with an identity link - Model 2
+model_hypothesis_10.2_identity <- glmer(
+  QRP_response_shifted ~ PPQr_mean_centered + QRP_descriptive_mean_centered +
+  (1 | response_id),
+  data = dat_hypothesis_10, 
+  family = Gamma(link = "identity")
+)
+
+tab_model(model_hypothesis_10.2_identity, show.se = TRUE, show.ci = FALSE, show.stat = TRUE)
+
+# Fit the Gamma model with an identity link - Model 3
+model_hypothesis_10.3_identity <- glmer(
+  QRP_response_shifted ~ PPQr_mean_centered + QRP_descriptive_mean_centered + QRP_injunctive_mean_centered +
+  (1 | response_id),
+  data = dat_hypothesis_10, 
+  family = Gamma(link = "identity")
+)
+
+tab_model(model_hypothesis_10.3_identity, show.se = TRUE, show.ci = FALSE, show.stat = TRUE)
+summary(model_hypothesis_10.3_identity)
+
+# Compare GLMER models
+anova(model_hypothesis_10.1_identity, model_hypothesis_10.2_identity, model_hypothesis_10.3_identity)
+
+performance::check_model(model_hypothesis_10.3_identity)
+```
+
+```{r}
+# Model comparisons
+# Fit models without dummy codes, and then compare to GLMER
+model_hypothesis_10.1_no_dummy <- lmer(QRP_response_shifted ~ PPQr_mean_centered + (1 | response_id), data = dat_hypothesis_10)
+model_hypothesis_10.2_no_dummy <- lmer(QRP_response_shifted ~ PPQr_mean_centered + QRP_descriptive_mean_centered + (1 | response_id), data = dat_hypothesis_10)
+model_hypothesis_10.3_no_dummy <- lmer(QRP_response_shifted ~ PPQr_mean_centered + QRP_descriptive_mean_centered + QRP_injunctive_mean_centered  + (1 | response_id), data = dat_hypothesis_10)
+
+anova(model_hypothesis_10.1_no_dummy, model_hypothesis_10.1_identity)
+anova(model_hypothesis_10.2_no_dummy, model_hypothesis_10.2_identity)
+anova(model_hypothesis_10.3_no_dummy, model_hypothesis_10.3_identity)
+```
+
+```{r}
+# Bootstrapped estimates
+# For 10.1
+model <- lmer(QRP_response ~ Vignette + PPQr_mean_centered + (1 | response_id), data = dat_long)
+
+# Bootstrapping
+set.seed(11)
+boot_results <- bootMer(
+  model, 
+  FUN = fixef,
+  nsim = 10000, 
+  type = "parametric" 
+)
+
+# Confidence intervals
+boot_ci_hypothesis_10.1 <- apply(boot_results$t, 2, quantile, probs = c(0.025, 0.975))
+print(boot_ci_hypothesis_10.1)
+
+# For 10.2
+model <- lmer(QRP_response ~ Vignette + PPQr_mean_centered + QRP_descriptive_mean_centered + (1 | response_id), data = dat_long)
+
+# Bootstrapping
+set.seed(11)
+boot_results <- bootMer(
+  model, 
+  FUN = fixef,
+  nsim = 10000, 
+  type = "parametric" 
+)
+
+# Confidence intervals
+boot_ci_hypothesis_10.2 <- apply(boot_results$t, 2, quantile, probs = c(0.025, 0.975))
+print(boot_ci_hypothesis_10.2)
+
+# For 10.3
+model <- lmer(QRP_response ~ Vignette + PPQr_mean_centered + QRP_descriptive_mean_centered + QRP_injunctive_mean_centered + (1 | response_id), data = dat_long)
+
+# Bootstrapping
+set.seed(11)
+boot_results <- bootMer(
+  model, 
+  FUN = fixef,
+  nsim = 10000, 
+  type = "parametric" 
+)
+
+# Confidence intervals
+boot_ci_hypothesis_10.3 <- apply(boot_results$t, 2, quantile, probs = c(0.025, 0.975))
+print(boot_ci_hypothesis_10.3)
+```
